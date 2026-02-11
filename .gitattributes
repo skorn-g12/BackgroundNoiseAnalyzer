@@ -1,0 +1,2 @@
+# Do not use Git LFS for raw/ (ignored; keep audio out of repo)
+raw/* !filter !diff !merge
