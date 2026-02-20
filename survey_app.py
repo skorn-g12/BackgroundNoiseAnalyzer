@@ -30,6 +30,8 @@ LABELS = ["very_low", "low", "medium", "high", "very_high"]
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac")
 TARGET_SR = 16000
 EPS = np.finfo(float).eps
+NOISE_LEVELS_DB = [-10, -15, -20, -25, -30, -35, -40]  # -10 to -40 dB, step 5
+SAMPLES_PER_CATEGORY = 2
 
 
 def load_mono(path: Path, sr: int = TARGET_SR) -> tuple[np.ndarray, int]:
@@ -60,20 +62,20 @@ def normalize_to_db(audio: np.ndarray, target_db: float) -> np.ndarray:
 def mix_clean_and_noise(
     clean_path: Path,
     noise_path: Path,
+    noise_level_db: float,
     clean_level_db: float = CLEAN_SPEECH_LEVEL_DB,
 ) -> tuple[bytes, float]:
-    """Mix clean speech + noise. Return (wav_bytes, snr_db)."""
+    """Mix clean speech + noise at given noise level. Return (wav_bytes, snr_db)."""
     clean, sr = load_mono(clean_path)
     noise, _ = load_mono(noise_path, sr)
-    n = min(len(clean), len(noise))
+    noise_norm = normalize_to_db(noise, noise_level_db)
+    n = min(len(clean), len(noise_norm))
     clean = clean[:n]
-    noise = noise[:n]
+    noise_norm = noise_norm[:n]
     clean_norm = normalize_to_db(clean, clean_level_db)
-    noise_db = rms_dbfs(noise)
-    mixed = clean_norm.astype(np.float64) + noise.astype(np.float64)
     # SNR = clean_level - noise_level (in dB)
-    snr_db = clean_level_db - noise_db
-    # Soft clip to avoid distortion
+    snr_db = clean_level_db - noise_level_db
+    mixed = clean_norm.astype(np.float64) + noise_norm.astype(np.float64)
     mixed = np.clip(mixed, -1.0, 1.0).astype(np.float32)
     buf = io.BytesIO()
     sf.write(buf, mixed, sr, format="WAV")
@@ -81,8 +83,21 @@ def mix_clean_and_noise(
     return buf.read(), snr_db
 
 
+def noise_to_wav_bytes(noise_path: Path, level_db: float) -> bytes:
+    """Load noise, normalize to level_db, return WAV bytes."""
+    noise, sr = load_mono(noise_path)
+    noise_norm = normalize_to_db(noise, level_db)
+    buf = io.BytesIO()
+    sf.write(buf, noise_norm, sr, format="WAV")
+    buf.seek(0)
+    return buf.read()
+
+
 def scan_clipped_samples() -> list[dict]:
-    """Return list of {category, clip_id, path, filename} from clipped_samples."""
+    """
+    Return list of {category, clip_id, path, filename, level_db} from clipped_samples.
+    Uses only SAMPLES_PER_CATEGORY samples per category; each sample has NOISE_LEVELS_DB variants.
+    """
     if not CLIPPED_SAMPLES_DIR.exists():
         return []
     rows = []
@@ -90,14 +105,19 @@ def scan_clipped_samples() -> list[dict]:
         if not subdir.is_dir():
             continue
         category = subdir.name
-        for path in sorted(subdir.iterdir()):
-            if path.suffix.lower() in (e.lower() for e in AUDIO_EXTENSIONS):
-                clip_id = f"{category}/{path.name}"
+        paths = sorted(
+            p for p in subdir.iterdir()
+            if p.suffix.lower() in (e.lower() for e in AUDIO_EXTENSIONS)
+        )[:SAMPLES_PER_CATEGORY]
+        for path in paths:
+            for level_db in NOISE_LEVELS_DB:
+                clip_id = f"{category}/{path.name}/{level_db}"
                 rows.append({
                     "category": category,
                     "clip_id": clip_id,
                     "path": path,
                     "filename": path.name,
+                    "level_db": level_db,
                 })
     return rows
 
@@ -111,12 +131,19 @@ def get_clips_for_category(rows: list, category: str) -> list[dict]:
 
 
 def append_responses_to_file(respondent_id: str, votes: dict, clip_rows: list) -> bool:
-    clip_ids = {r["clip_id"] for r in clip_rows}
+    clip_lookup = {r["clip_id"]: r for r in clip_rows}
     rows = []
     for cid, label in votes.items():
-        if cid not in clip_ids:
+        if cid not in clip_lookup:
             continue
-        rows.append({"respondent_id": respondent_id, "clip_id": cid, "label": label})
+        r = clip_lookup[cid]
+        rows.append({
+            "respondent_id": respondent_id,
+            "clip_id": cid,
+            "label": label,
+            "category": r["category"],
+            "level_db": r["level_db"],
+        })
     if not rows:
         return False
     path = Path(COLLECTED_RESPONSES_CSV)
@@ -127,7 +154,7 @@ def append_responses_to_file(respondent_id: str, votes: dict, clip_rows: list) -
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
                 need_header = path.stat().st_size == 0
-                w = csv.DictWriter(f, fieldnames=["respondent_id", "clip_id", "label"])
+                w = csv.DictWriter(f, fieldnames=["respondent_id", "clip_id", "label", "category", "level_db"])
                 if need_header:
                     w.writeheader()
                 w.writerows(rows)
@@ -136,7 +163,7 @@ def append_responses_to_file(respondent_id: str, votes: dict, clip_rows: list) -
     except ImportError:
         with open(path, "a", newline="") as f:
             need_header = path.stat().st_size == 0
-            w = csv.DictWriter(f, fieldnames=["respondent_id", "clip_id", "label"])
+            w = csv.DictWriter(f, fieldnames=["respondent_id", "clip_id", "label", "category", "level_db"])
             if need_header:
                 w.writeheader()
             w.writerows(rows)
@@ -175,16 +202,25 @@ def main():
     clips = get_clips_for_category(clip_rows, category)
     st.caption(f"{len(clips)} clips in {category}.")
 
+    prev_sample = None
+    sample_ix = 0
+    ver = 0
     for idx, row in enumerate(clips):
         clip_id = row["clip_id"]
         path = row["path"]
-        filename = row["filename"]
+        sample_key = f"{row['category']}/{row['filename']}"
+        if sample_key != prev_sample:
+            sample_ix += 1
+            ver = 1
+            prev_sample = sample_key
+        else:
+            ver += 1
 
         if not path.exists():
             st.warning(f"Missing: {path}")
             continue
 
-        st.markdown(f"**{filename}**")
+        st.markdown(f"**Sample {sample_ix}, ver {ver}**")
         play_mode = st.radio(
             "Play",
             options=["Noise only", "Mixed (noise + clean speech)"],
@@ -193,12 +229,11 @@ def main():
         )
 
         if play_mode == "Noise only":
-            st.audio(str(path))
+            st.audio(noise_to_wav_bytes(path, row["level_db"]), format="audio/wav")
         else:
             if CLEAN_AUDIO_PATH.exists():
-                mixed_bytes, snr_db = mix_clean_and_noise(CLEAN_AUDIO_PATH, path)
+                mixed_bytes, _ = mix_clean_and_noise(CLEAN_AUDIO_PATH, path, row["level_db"])
                 st.audio(mixed_bytes, format="audio/wav")
-                st.caption(f"SNR ≈ {snr_db:.1f} dB (clean at {CLEAN_SPEECH_LEVEL_DB} dB, noise at its file level)")
             else:
                 st.warning("Clean speech file missing; cannot play mixed.")
 
@@ -227,12 +262,15 @@ def main():
                     st.warning("No votes to save.")
         with col_dl:
             from datetime import datetime
+            clip_lookup = {r["clip_id"]: r for r in clip_rows}
             output = io.StringIO()
             w = csv.writer(output)
-            w.writerow(["clip_id", "label"])
+            w.writerow(["clip_id", "label", "category", "level_db", "snr_db"])
             for cid, label in st.session_state["votes"].items():
-                if cid in all_clip_ids:
-                    w.writerow([cid, label])
+                if cid in all_clip_ids and cid in clip_lookup:
+                    r = clip_lookup[cid]
+                    snr_db = CLEAN_SPEECH_LEVEL_DB - r["level_db"]
+                    w.writerow([cid, label, r["category"], r["level_db"], round(snr_db, 1)])
             csv_str = output.getvalue()
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             st.download_button(
