@@ -257,24 +257,25 @@ def main():
     st.caption(f"{len(clips)} clips in {category}.")
 
     prev_sample = None
-    sample_ix = 0
-    ver = 0
+    rec_idx = -1
+    clip_num = 0
     for idx, row in enumerate(clips):
         clip_id = row["clip_id"]
         path = row["path"]
         sample_key = f"{row['category']}/{row['filename']}"
         if sample_key != prev_sample:
-            sample_ix += 1
-            ver = 1
+            rec_idx += 1
+            clip_num = 1
             prev_sample = sample_key
         else:
-            ver += 1
+            clip_num += 1
 
+        rec_label = chr(ord("A") + rec_idx)
         if not path.exists():
             st.warning(f"Missing: {path}")
             continue
 
-        st.markdown(f"**Sample {sample_ix}, ver {ver}**")
+        st.markdown(f"**Recording {rec_label} — clip {clip_num}**")
         play_mode = st.radio(
             "Play",
             options=["Noise only", "Mixed (noise + clean speech)"],
