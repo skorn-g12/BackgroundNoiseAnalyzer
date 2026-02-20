@@ -159,10 +159,15 @@ def scan_clipped_samples() -> list[dict]:
         if not subdir.is_dir():
             continue
         category = subdir.name
-        paths = sorted(
+        all_paths = sorted(
             p for p in subdir.iterdir()
             if p.suffix.lower() in (e.lower() for e in AUDIO_EXTENSIONS)
-        )[:SAMPLES_PER_CATEGORY]
+        )
+        # Use different second sample for kids_playing (skip the loud screaming one)
+        if category == "kids_playing" and len(all_paths) > 2:
+            paths = [all_paths[0], all_paths[2]]
+        else:
+            paths = all_paths[:SAMPLES_PER_CATEGORY]
         for path in paths:
             for level_db in NOISE_LEVELS_DB:
                 clip_id = f"{category}/{path.name}/{level_db}"
