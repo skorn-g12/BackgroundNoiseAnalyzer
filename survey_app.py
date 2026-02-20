@@ -304,36 +304,27 @@ def main():
         st.markdown("---")
 
     st.divider()
-    st.subheader("Submit or export")
+    st.subheader("Export")
     all_clip_ids = {r["clip_id"] for r in clip_rows}
     if st.session_state["votes"]:
-        col_submit, col_dl = st.columns(2)
-        with col_submit:
-            if st.button("Submit my responses"):
-                respondent_id = str(uuid.uuid4())
-                if append_responses_to_file(respondent_id, st.session_state["votes"], clip_rows):
-                    st.success("Thanks, your responses have been saved.")
-                else:
-                    st.warning("No votes to save.")
-        with col_dl:
-            from datetime import datetime
-            clip_lookup = {r["clip_id"]: r for r in clip_rows}
-            output = io.StringIO()
-            w = csv.writer(output)
-            w.writerow(["clip_id", "label", "category", "level_db", "snr_db"])
-            for cid, label in st.session_state["votes"].items():
-                if cid in all_clip_ids and cid in clip_lookup:
-                    r = clip_lookup[cid]
-                    snr_db = CLEAN_SPEECH_LEVEL_DB - r["level_db"]
-                    w.writerow([cid, label, r["category"], r["level_db"], round(snr_db, 1)])
-            csv_str = output.getvalue()
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            st.download_button(
-                "Download my responses (CSV)",
-                data=csv_str,
-                file_name=f"survey_responses_{ts}.csv",
-                mime="text/csv",
-            )
+        from datetime import datetime
+        clip_lookup = {r["clip_id"]: r for r in clip_rows}
+        output = io.StringIO()
+        w = csv.writer(output)
+        w.writerow(["clip_id", "label", "category", "level_db", "snr_db"])
+        for cid, label in st.session_state["votes"].items():
+            if cid in all_clip_ids and cid in clip_lookup:
+                r = clip_lookup[cid]
+                snr_db = CLEAN_SPEECH_LEVEL_DB - r["level_db"]
+                w.writerow([cid, label, r["category"], r["level_db"], round(snr_db, 1)])
+        csv_str = output.getvalue()
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        st.download_button(
+            "Download my responses (CSV)",
+            data=csv_str,
+            file_name=f"survey_responses_{ts}.csv",
+            mime="text/csv",
+        )
     else:
         st.info("Select perceived level for at least one clip above.")
 
