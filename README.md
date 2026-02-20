@@ -59,20 +59,52 @@ python build_survey_bundle.py
 - Writes `survey_mapping.csv` with columns `clip_id`, `category`, `sample_id`, `level_db`.
 - **Keep `survey_mapping.csv` private**; do not share with participants so they are not influenced by filenames.
 
-### 5. Run the survey (Streamlit app)
+### 5. Run the survey
 
-- Start the app and expose it (e.g. with ngrok):
+#### Option A: Local deployment (with ngrok)
+- Start the app and expose it:
   ```bash
   streamlit run survey_app.py --server.address 0.0.0.0
   # In another terminal: ngrok http 8501
   ```
-- Share the ngrok URL. Respondents pick a category, play each clip, choose **very_low / low / medium / high / very_high**, then click **Submit my responses** (saved to `collected_responses.csv` on the server) or **Download my responses** to keep a copy.
+- Share the ngrok URL. Responses are saved to `collected_responses.csv` on your local machine.
 
-### 6. Post-survey: map labels to the voice simulator (automated)
+#### Option B: Cloud deployment (Streamlit Cloud + Google Sheets) - **Recommended**
+- Follow the setup guide in `GOOGLE_SHEETS_SETUP.md` to configure Google Sheets
+- Deploy to Streamlit Cloud using `survey_app_cloud.py` as the main file
+- Share the permanent Streamlit Cloud URL (e.g., `https://your-app.streamlit.app`)
+- Responses are automatically saved to your Google Sheet
 
-- If everyone used Submit, responses are in `collected_responses.csv`. To include any downloaded CSVs too: `python merge_responses.py collected_responses.csv survey_responses_*.csv -o merged_responses.csv`
-- Aggregate and write mapping: `python aggregate_survey_responses.py collected_responses.csv -o level_mapping.json` (or use `merged_responses.csv` if you merged).
-- Use `level_mapping.json` (label → median dB) in the voice simulator.
+**Benefits of cloud deployment:**
+- ✅ Permanent URL (no ngrok restarts)
+- ✅ No SSL/protocol errors
+- ✅ Responses persist in Google Sheets
+- ✅ Can view responses in real-time
+- ✅ Free hosting
+
+### 6. Download responses from Google Sheets (if using cloud deployment)
+
+If you deployed to Streamlit Cloud, download the responses from Google Sheets:
+
+```bash
+python download_responses_from_sheets.py \
+  --credentials google_credentials.json \
+  --sheet-url "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit" \
+  --output collected_responses.csv
+```
+
+This downloads all responses into the same CSV format used by the local app.
+
+### 7. Post-survey: map labels to the voice simulator (automated)
+
+- Aggregate and compute median dB per label per category:
+  ```bash
+  python aggregate_survey_responses.py collected_responses.csv -o level_mapping.json
+  ```
+- This outputs:
+  - Console: Detailed statistics (count, median, min, max per label per category)
+  - `level_mapping.json`: Category → Label → Median dB mapping for the voice simulator
+- Use `level_mapping.json` in your voice simulator (e.g., VOCSIM's `noise_personas.yaml`)
 
 ## Directory layout
 
