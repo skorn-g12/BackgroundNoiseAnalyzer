@@ -32,6 +32,7 @@ TARGET_SR = 16000
 EPS = np.finfo(float).eps
 NOISE_LEVELS_DB = [-10, -15, -20, -25, -30, -35, -40]  # -10 to -40 dB, step 5
 SAMPLES_PER_CATEGORY = 2
+CROSSFADE_SEC = 0.2  # fade-out / fade-in duration when looping short noise
 
 
 def load_mono(path: Path, sr: int = TARGET_SR) -> tuple[np.ndarray, int]:
@@ -59,6 +60,57 @@ def normalize_to_db(audio: np.ndarray, target_db: float) -> np.ndarray:
     return (audio * scale).astype(np.float32)
 
 
+def extend_noise_with_crossfade(
+    noise: np.ndarray, target_len: int, sr: int, crossfade_sec: float = CROSSFADE_SEC
+) -> np.ndarray:
+    """
+    Loop noise to reach target_len. Uses 0.2s crossfade at each loop point:
+    last crossfade_sec of current block fades out while first crossfade_sec of
+    next block fades in, overlap-added to avoid clicks (industry standard).
+    """
+    n = len(noise)
+    if n >= target_len:
+        return noise[:target_len].astype(np.float64)
+    cf = int(crossfade_sec * sr)
+    cf = min(cf, n // 2, max(1, (n - 1) // 2))  # need enough samples for crossfade
+    if cf < 1:
+        # Fallback: simple tile (may click)
+        repeats = (target_len // n) + 1
+        return np.tile(noise, repeats)[:target_len].astype(np.float64)
+
+    out = np.zeros(target_len, dtype=np.float64)
+    pos = 0
+    first = True
+    while pos < target_len:
+        if first:
+            # First block: add full noise
+            add_len = min(n, target_len)
+            out[pos : pos + add_len] = noise[:add_len]
+            pos += add_len
+            first = False
+        else:
+            # Overlap region: fade-out (from end of prev in-place) + fade-in (from start of noise)
+            # Prev block ends at pos; its tail is out[pos-cf:pos]
+            # We overwrite that region with crossfade: out[pos-cf:pos] * linspace(1,0) + noise[:cf] * linspace(0,1)
+            fade_out = np.linspace(1, 0, cf, dtype=np.float64)
+            fade_in = np.linspace(0, 1, cf, dtype=np.float64)
+            overlap_len = min(cf, target_len - (pos - cf))
+            if overlap_len <= 0:
+                break
+            prev_tail = out[pos - cf : pos - cf + overlap_len].copy()
+            next_head = noise[:overlap_len]
+            out[pos - cf : pos - cf + overlap_len] = prev_tail * fade_out[:overlap_len] + next_head * fade_in[:overlap_len]
+            pos = pos - cf + overlap_len
+            if pos >= target_len:
+                break
+            # Add rest of noise (non-overlap part)
+            rest_len = min(n - cf, target_len - pos)
+            if rest_len > 0:
+                out[pos : pos + rest_len] = noise[cf : cf + rest_len]
+                pos += rest_len
+    return out
+
+
 def mix_clean_and_noise(
     clean_path: Path,
     noise_path: Path,
@@ -69,9 +121,11 @@ def mix_clean_and_noise(
     clean, sr = load_mono(clean_path)
     noise, _ = load_mono(noise_path, sr)
     noise_norm = normalize_to_db(noise, noise_level_db)
-    n = min(len(clean), len(noise_norm))
-    clean = clean[:n]
-    noise_norm = noise_norm[:n]
+    # If noise is shorter than clean, loop it with crossfade
+    if len(noise_norm) < len(clean):
+        noise_norm = extend_noise_with_crossfade(noise_norm, len(clean), sr)
+    else:
+        noise_norm = noise_norm[: len(clean)]
     clean_norm = normalize_to_db(clean, clean_level_db)
     # SNR = clean_level - noise_level (in dB)
     snr_db = clean_level_db - noise_level_db
