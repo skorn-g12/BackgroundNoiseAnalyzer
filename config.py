@@ -8,6 +8,9 @@ LEVELS_DIR = ROOT_DIR / "levels"
 MANIFEST_ORIGINAL_CSV = ROOT_DIR / "manifest_original.csv"
 SURVEY_MAPPING_CSV = ROOT_DIR / "survey_mapping.csv"
 COLLECTED_RESPONSES_CSV = ROOT_DIR / "collected_responses.csv"
+CLIPPED_SAMPLES_DIR = ROOT_DIR / "clipped_samples"
+CLEAN_AUDIO_PATH = CLIPPED_SAMPLES_DIR / "voicebooking-speech.wav"
+CLEAN_SPEECH_LEVEL_DB = -25  # Reference level for clean speech when mixing
 
 # Categories: 5 samples each
 CATEGORIES = [
